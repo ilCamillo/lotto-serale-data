@@ -1,190 +1,116 @@
 #!/usr/bin/env python3
 """
-fetch_10elotto.py
-Scarica l'ultima estrazione del 10eLotto Serale da estrazionedellotto.it
-tramite scrape.do e salva il risultato in ultima_estrazione.json
-
-Viene eseguito dalla GitHub Action dopo ogni estrazione.
+fetch_10elotto.py - usa estrazioni10elotto.it che ha struttura HTML pulita
 """
 
-import json
-import re
-import sys
+import json, re, sys
 from datetime import date, datetime
-import urllib.request
-import urllib.parse
-import html
+import urllib.request, urllib.parse
 
-# ─── CONFIGURAZIONE ─────────────────────────────────────────────────────────
 SCRAPE_DO_TOKEN = "a7c707c84d8345ef9c381ef4aecf5e59a3a24261872"
-TARGET_URL      = "https://www.estrazionedellotto.it/10elotto/ultime-estrazioni-10elotto"
+TARGET_URL      = "https://estrazioni10elotto.it/"
 OUTPUT_FILE     = "ultima_estrazione.json"
-# ────────────────────────────────────────────────────────────────────────────
 
-MESI_IT = {
-    "gennaio":1,"febbraio":2,"marzo":3,"aprile":4,
-    "maggio":5,"giugno":6,"luglio":7,"agosto":8,
-    "settembre":9,"ottobre":10,"novembre":11,"dicembre":12
-}
+MESI_IT  = {"gennaio":1,"febbraio":2,"marzo":3,"aprile":4,"maggio":5,"giugno":6,
+             "luglio":7,"agosto":8,"settembre":9,"ottobre":10,"novembre":11,"dicembre":12}
+GIORNI_IT = {0:"Lunedì",1:"Martedì",2:"Mercoledì",3:"Giovedì",4:"Venerdì",5:"Sabato",6:"Domenica"}
 
-GIORNI_IT = {
-    0:"Lunedì",1:"Martedì",2:"Mercoledì",3:"Giovedì",
-    4:"Venerdì",5:"Sabato",6:"Domenica"
-}
-
-def fetch_html(url: str) -> str:
-    """Scarica la pagina tramite scrape.do."""
-    encoded = urllib.parse.quote(url, safe="")
-    api_url = f"https://api.scrape.do/?token={SCRAPE_DO_TOKEN}&url={encoded}&render=false"
-    print(f"Chiamata scrape.do → {url}")
-    req = urllib.request.Request(api_url, headers={"User-Agent": "TeneLotto-Action/1.0"})
+def fetch_html():
+    encoded = urllib.parse.quote(TARGET_URL, safe="")
+    url = f"https://api.scrape.do/?token={SCRAPE_DO_TOKEN}&url={encoded}&render=false"
+    print(f"Chiamo scrape.do → {TARGET_URL}")
+    req = urllib.request.Request(url, headers={"User-Agent": "TeneLotto/1.0"})
     with urllib.request.urlopen(req, timeout=30) as r:
         if r.status != 200:
             raise Exception(f"HTTP {r.status}")
         return r.read().decode("utf-8", errors="replace")
 
-def pulisci(testo: str) -> str:
-    """Rimuove tag HTML e decodifica entità."""
-    testo = re.sub(r"<[^>]+>", " ", testo)
-    testo = html.unescape(testo)
-    return re.sub(r"\s+", " ", testo).strip()
+def strip_tags(html):
+    return re.sub(r"<[^>]+>", " ", html)
 
-def estrai_numeri(testo: str, quanti: int) -> list[int]:
-    """Estrae fino a `quanti` numeri interi da 1 a 90 da una stringa."""
-    trovati = []
+def estrai_numeri(testo, quanti):
+    res = []
     for m in re.finditer(r"\b(\d{1,2})\b", testo):
         n = int(m.group(1))
-        if 1 <= n <= 90 and n not in trovati:
-            trovati.append(n)
-        if len(trovati) == quanti:
+        if 1 <= n <= 90 and n not in res:
+            res.append(n)
+        if len(res) == quanti:
             break
-    return trovati
+    return res
 
-def parse_data(testo: str) -> tuple[date | None, str]:
-    """Cerca una data italiana nel testo e restituisce (date, testo_leggibile)."""
-    pattern = re.compile(
-        r"(\d{1,2})\s*/?\s*(gennaio|febbraio|marzo|aprile|maggio|giugno|"
-        r"luglio|agosto|settembre|ottobre|novembre|dicembre)\s*/?\s*(\d{4})",
-        re.IGNORECASE
+def parse(html):
+    # Cerca il primo blocco "Concorso n° NNN/AAAA"
+    m = re.search(
+        r"Concorso\s+n[°º.]\s*(\d+)/(\d{4})(.*?)(?=Concorso\s+n[°º.]|\Z)",
+        html, re.DOTALL | re.IGNORECASE
     )
-    m = pattern.search(testo)
-    if m:
-        g = int(m.group(1))
-        mese_num = MESI_IT[m.group(2).lower()]
-        a = int(m.group(3))
-        try:
-            d = date(a, mese_num, g)
-            giorno_nome = GIORNI_IT[d.weekday()]
-            mese_nome = m.group(2).lower()
-            return d, f"{giorno_nome} {g} {mese_nome} {a}"
-        except ValueError:
-            pass
+    if not m:
+        raise Exception("Blocco concorso non trovato")
 
-    # Fallback: formato DD/MM/YYYY
-    m2 = re.search(r"(\d{2})/(\d{2})/(\d{4})", testo)
-    if m2:
-        try:
-            d = date(int(m2.group(3)), int(m2.group(2)), int(m2.group(1)))
-            giorno_nome = GIORNI_IT[d.weekday()]
-            mese_nome = list(MESI_IT.keys())[d.month - 1]
-            return d, f"{giorno_nome} {d.day} {mese_nome} {d.year}"
-        except ValueError:
-            pass
+    num_concorso = int(m.group(1))
+    anno = int(m.group(2))
+    testo = strip_tags(m.group(3))
+    print(f"Concorso n° {num_concorso}/{anno}")
+    print(f"Testo: {testo[:400]}")
 
-    return None, ""
-
-def parse_10elotto(html_content: str) -> dict:
-    """
-    Estrae i dati del 10eLotto dall'HTML.
-    La pagina ha una struttura con blocchi per ogni estrazione;
-    prendiamo il primo (= più recente).
-    """
-
-    # Cerca il primo blocco estrazione
-    # La pagina usa tipicamente <article>, <section> o <div> con classe relativa all'estrazione
-    # Proviamo a trovare il primo blocco significativo che contenga "20 numeri" o simile
-
-    # Strategia 1: cerca tag <article> o <div class="...draw...">
-    blocco = None
-    for pattern in [
-        r'<article[^>]*>(.*?)</article>',
-        r'<section[^>]*class="[^"]*draw[^"]*"[^>]*>(.*?)</section>',
-        r'<div[^>]*class="[^"]*estrazione[^"]*"[^>]*>(.*?)</div>',
-        r'<div[^>]*class="[^"]*result[^"]*"[^>]*>(.*?)</div>',
-        r'<div[^>]*class="[^"]*lotto[^"]*"[^>]*>(.*?)</div>',
-        r'<table[^>]*>(.*?)</table>',
-    ]:
-        m = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
-        if m:
-            testo_blocco = pulisci(m.group(1))
-            numeri = estrai_numeri(testo_blocco, 20)
-            if len(numeri) >= 15:
-                blocco = testo_blocco
-                print(f"Blocco trovato con pattern: {pattern[:40]}...")
-                break
-
-    if blocco is None:
-        # Strategia 2: prendi tutto il testo e cerca la sequenza di 20 numeri
-        print("Nessun blocco specifico trovato, cerco nel testo completo...")
-        blocco = pulisci(html_content)
-
-    # Estrai data
-    data_obj, data_leggibile = parse_data(blocco)
-    if data_obj is None:
+    # Data
+    data_obj = None
+    m_d = re.search(r"(\d{2})/(\d{2})/(\d{4})", testo)
+    if m_d:
+        try: data_obj = date(int(m_d.group(3)), int(m_d.group(2)), int(m_d.group(1)))
+        except: pass
+    if not data_obj:
+        m_d2 = re.search(r"(\d{1,2})\s+(" + "|".join(MESI_IT.keys()) + r")\s+(\d{4})", testo, re.IGNORECASE)
+        if m_d2:
+            try: data_obj = date(int(m_d2.group(3)), MESI_IT[m_d2.group(2).lower()], int(m_d2.group(1)))
+            except: pass
+    if not data_obj:
         data_obj = date.today()
-        g = GIORNI_IT[data_obj.weekday()]
-        mese = list(MESI_IT.keys())[data_obj.month - 1]
-        data_leggibile = f"{g} {data_obj.day} {mese} {data_obj.year}"
-        print(f"⚠️  Data non trovata nell'HTML, uso oggi: {data_leggibile}")
-    else:
-        print(f"✅ Data trovata: {data_leggibile}")
+        print("⚠️  Data non trovata, uso oggi")
 
-    # Estrai i 20 numeri vincenti
-    numeri = estrai_numeri(blocco, 20)
-    print(f"✅ Numeri trovati: {len(numeri)} → {numeri}")
+    g = GIORNI_IT[data_obj.weekday()]
+    mese = list(MESI_IT.keys())[data_obj.month - 1]
+    data_leggibile = f"{g} {data_obj.day} {mese} {data_obj.year}"
+    print(f"Data: {data_leggibile}")
+
+    # Separa sezione Extra
+    testo_extra = ""
+    m_ex = re.search(r"Extra\s*[·:\-]\s*(.*?)(?=Segui|Numero\s+pi|I\s+numeri\s+pi|$)", testo, re.DOTALL | re.IGNORECASE)
+    if m_ex:
+        testo_extra = m_ex.group(1)
+        testo = testo[:m_ex.start()]
+
+    # Numero Oro e Doppio Oro
+    numero_oro = None
+    doppio_oro = None
+    m_oro = re.search(r"Numero\s+Oro\s*[·:\-]\s*(\d{1,2})", testo, re.IGNORECASE)
+    if m_oro:
+        numero_oro = int(m_oro.group(1))
+    m_dop = re.search(r"Doppio\s+Oro\s*[·:\-]\s*(\d{1,2})", testo, re.IGNORECASE)
+    if m_dop:
+        doppio_oro = int(m_dop.group(1))
+
+    # 20 numeri: rimuovi sezioni Oro/Doppio Oro prima di cercare
+    testo_n = re.sub(r"(?:Numero\s+Oro|Doppio\s+Oro).*", "", testo, flags=re.IGNORECASE | re.DOTALL)
+    numeri = estrai_numeri(testo_n, 20)
+    print(f"Numeri ({len(numeri)}): {numeri}")
 
     if len(numeri) < 20:
-        raise Exception(f"Trovati solo {len(numeri)} numeri su 20 attesi")
+        raise Exception(f"Trovati solo {len(numeri)} numeri su 20")
 
-    # Numero Oro: il primo estratto
-    # Doppio Oro: il secondo
-    # Cerchiamo testo "Numero Oro" / "Doppio Oro" / "Gold" / "DoubleGold"
-    numero_oro  = numeri[0]
-    doppio_oro  = numeri[1]
+    if numero_oro is None: numero_oro = numeri[0]
+    if doppio_oro is None: doppio_oro = numeri[1]
 
-    for pattern_oro in [r"(?:numero\s*oro|gold)[^0-9]*(\d{1,2})", r"oro[^0-9]*(\d{1,2})"]:
-        m = re.search(pattern_oro, blocco, re.IGNORECASE)
-        if m:
-            n = int(m.group(1))
-            if 1 <= n <= 90:
-                numero_oro = n
-                print(f"✅ Numero Oro trovato: {numero_oro}")
-                break
-
-    for pattern_doppio in [r"(?:doppio\s*oro|double\s*gold)[^0-9]*(\d{1,2})", r"doppio[^0-9]*(\d{1,2})"]:
-        m = re.search(pattern_doppio, blocco, re.IGNORECASE)
-        if m:
-            n = int(m.group(1))
-            if 1 <= n <= 90 and n != numero_oro:
-                doppio_oro = n
-                print(f"✅ Doppio Oro trovato: {doppio_oro}")
-                break
-
-    # Numeri Extra (15 numeri aggiuntivi)
     extra = []
-    for pattern_extra in [r"(?:extra|numeri\s*extra)[^0-9]*((?:\d{1,2}\s*){5,15})", r"extra[^<]*"]:
-        m = re.search(pattern_extra, blocco, re.IGNORECASE)
-        if m:
-            extra = estrai_numeri(m.group(0), 15)
-            extra = [n for n in extra if n not in numeri][:15]
-            if len(extra) >= 5:
-                print(f"✅ Extra trovati: {len(extra)} → {extra}")
-                break
+    if testo_extra:
+        extra = [n for n in estrai_numeri(testo_extra, 15) if n not in numeri][:15]
+    print(f"Numero Oro: {numero_oro} | Doppio Oro: {doppio_oro} | Extra ({len(extra)}): {extra}")
 
     return {
-        "data":          data_obj.isoformat(),         # "2026-06-25"
-        "data_testo":    data_leggibile,                # "Mercoledì 25 giugno 2026"
-        "numeri":        numeri,                        # [2, 5, 8, ...]
+        "data":          data_obj.isoformat(),
+        "data_testo":    data_leggibile,
+        "concorso":      num_concorso,
+        "numeri":        numeri,
         "numero_oro":    numero_oro,
         "doppio_oro":    doppio_oro,
         "extra":         extra,
@@ -192,30 +118,27 @@ def parse_10elotto(html_content: str) -> dict:
     }
 
 def main():
-    print(f"=== Fetch 10eLotto Serale - {date.today()} ===\n")
-
+    print(f"=== Fetch 10eLotto - {date.today()} ===\n")
     try:
-        html_content = fetch_html(TARGET_URL)
-        print(f"HTML ricevuto: {len(html_content)} caratteri\n")
+        html = fetch_html()
+        print(f"HTML: {len(html)} caratteri\n")
     except Exception as e:
-        print(f"❌ Errore fetch: {e}")
+        print(f"❌ Fetch fallito: {e}")
         sys.exit(1)
 
     try:
-        dati = parse_10elotto(html_content)
+        dati = parse(html)
     except Exception as e:
-        print(f"❌ Errore parsing: {e}")
+        print(f"❌ Parsing fallito: {e}")
+        with open("debug_html.txt", "w") as f:
+            f.write(html[:8000])
+        print("Salvato debug_html.txt")
         sys.exit(1)
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(dati, f, ensure_ascii=False, indent=2)
 
-    print(f"\n✅ Salvato {OUTPUT_FILE}")
-    print(f"   Data        : {dati['data_testo']}")
-    print(f"   Numeri      : {dati['numeri']}")
-    print(f"   Numero Oro  : {dati['numero_oro']}")
-    print(f"   Doppio Oro  : {dati['doppio_oro']}")
-    print(f"   Extra ({len(dati['extra'])}): {dati['extra']}")
+    print(f"\n✅ {OUTPUT_FILE} aggiornato — Concorso n° {dati['concorso']} del {dati['data_testo']}")
 
 if __name__ == "__main__":
     main()
