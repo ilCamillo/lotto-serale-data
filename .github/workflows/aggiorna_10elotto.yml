@@ -1,27 +1,37 @@
 name: Aggiorna 10eLotto Serale
+
 on:
   schedule:
+    # Martedì, giovedì, venerdì, sabato alle 20:10 ora italiana
+    # Estate CEST = UTC+2 → 18:10 UTC
     - cron: '10 18 * * 2'
     - cron: '10 18 * * 4'
     - cron: '10 18 * * 5'
     - cron: '10 18 * * 6'
   workflow_dispatch:
+
 jobs:
   aggiorna:
     runs-on: ubuntu-latest
+    # Timeout generoso per i retry (3 tentativi x 5 min = 20 min max)
+    timeout-minutes: 25
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Esegui fetch estrazione
+
+      - name: Esegui fetch con retry automatico
         run: python fetch_10elotto.py
-      - name: Commit e push
+
+      - name: Commit e push JSON + CSV aggiornati
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ultima_estrazione.json debug_html.txt || true
-          git diff --cached --quiet || git commit -m "Debug run $(date '+%Y-%m-%d')"
+          git add ultima_estrazione.json storico_10elotto_serale.csv
+          git diff --cached --quiet || git commit -m "Estrazione $(python -c "import json; d=json.load(open('ultima_estrazione.json')); print(d['data_testo'])")"
           git push
