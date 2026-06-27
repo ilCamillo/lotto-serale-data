@@ -1,5 +1,4 @@
-yamlname: Aggiorna 10eLotto Serale
-
+name: Aggiorna 10eLotto Serale
 on:
   schedule:
     - cron: '10 18 * * 2'
@@ -7,27 +6,22 @@ on:
     - cron: '10 18 * * 5'
     - cron: '10 18 * * 6'
   workflow_dispatch:
-
 jobs:
   aggiorna:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Esegui fetch estrazione
         run: python fetch_10elotto.py
-
-      - name: Commit e push ultima_estrazione.json
+      - name: Commit e push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ultima_estrazione.json
-          git diff --cached --quiet || git commit -m "Estrazione $(python -c "import json; d=json.load(open('ultima_estrazione.json')); print(d['data_testo'])")"
+          git diff --cached --quiet || git commit -m "Aggiornamento estrazione"
           git push
