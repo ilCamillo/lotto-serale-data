@@ -2,19 +2,26 @@ name: Aggiorna 10eLotto Serale
 
 on:
   schedule:
-    # Martedì, giovedì, venerdì, sabato alle 20:10 ora italiana
-    # Estate CEST = UTC+2 → 18:10 UTC
-    - cron: '10 18 * * 2'
-    - cron: '10 18 * * 4'
-    - cron: '10 18 * * 5'
-    - cron: '10 18 * * 6'
+    - cron: '0 18 * * 2'
+    - cron: '0 18 * * 4'
+    - cron: '0 18 * * 5'
+    - cron: '0 18 * * 6'
+    - cron: '20 18 * * 2'
+    - cron: '20 18 * * 4'
+    - cron: '20 18 * * 5'
+    - cron: '20 18 * * 6'
+    - cron: '40 18 * * 2'
+    - cron: '40 18 * * 4'
+    - cron: '40 18 * * 5'
+    - cron: '40 18 * * 6'
   workflow_dispatch:
 
 jobs:
   aggiorna:
     runs-on: ubuntu-latest
-    # Timeout generoso per i retry (3 tentativi x 5 min = 20 min max)
     timeout-minutes: 25
+    env:
+      SCRAPE_DO_TOKEN: ${{ secrets.SCRAPE_DO_TOKEN }}
 
     steps:
       - name: Checkout repo
