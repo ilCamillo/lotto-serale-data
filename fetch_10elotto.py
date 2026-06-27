@@ -18,7 +18,7 @@ GIORNI_IT = {0:"Lunedì",1:"Martedì",2:"Mercoledì",3:"Giovedì",4:"Venerdì",5
 
 def fetch_html():
     encoded = urllib.parse.quote(TARGET_URL, safe="")
-    url = f"https://api.scrape.do/?token={SCRAPE_DO_TOKEN}&url={encoded}&render=false"
+    url = f"https://api.scrape.do/?token={SCRAPE_DO_TOKEN}&url={encoded}&render=true"
     print(f"Chiamo scrape.do → {TARGET_URL}")
     req = urllib.request.Request(url, headers={"User-Agent": "TeneLotto/1.0"})
     with urllib.request.urlopen(req, timeout=30) as r:
