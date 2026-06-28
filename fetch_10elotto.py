@@ -5,19 +5,20 @@ fetch_10elotto.py
 - Retry automatico se i dati non sono ancora aggiornati
 - Aggiorna ultima_estrazione.json
 - Aggiunge la nuova riga in cima a storico_10elotto_serale.csv
+- Token letto da variabile d'ambiente (GitHub Secret)
 """
 
 import json, re, sys, time, os
 from datetime import date, datetime
 import urllib.request, urllib.parse
 
-import os
+# Token letto dal GitHub Secret — non appare mai nel codice
 SCRAPE_DO_TOKEN = os.environ.get("SCRAPE_DO_TOKEN", "")
 TARGET_URL      = "https://estrazioni10elotto.it/"
 OUTPUT_JSON     = "ultima_estrazione.json"
 OUTPUT_CSV      = "storico_10elotto_serale.csv"
-MAX_RETRY       = 3        # tentativi massimi
-RETRY_WAIT      = 300      # secondi tra un tentativo e l'altro (5 minuti)
+MAX_RETRY       = 3
+RETRY_WAIT      = 300   # 5 minuti tra un tentativo e l'altro
 
 MESI_IT = {"gennaio":1,"febbraio":2,"marzo":3,"aprile":4,"maggio":5,"giugno":6,
             "luglio":7,"agosto":8,"settembre":9,"ottobre":10,"novembre":11,"dicembre":12}
@@ -27,6 +28,8 @@ GIORNI_IT = {0:"Lunedì",1:"Martedì",2:"Mercoledì",3:"Giovedì",
 # ─── Fetch ───────────────────────────────────────────────────────────────────
 
 def fetch_html():
+    if not SCRAPE_DO_TOKEN:
+        raise Exception("SCRAPE_DO_TOKEN non trovato! Controlla i GitHub Secrets.")
     encoded = urllib.parse.quote(TARGET_URL, safe="")
     url = f"https://api.scrape.do/?token={SCRAPE_DO_TOKEN}&url={encoded}&render=true"
     print(f"  → scrape.do chiamata a {TARGET_URL}")
@@ -58,7 +61,7 @@ def parse(html):
     if not m_inizio:
         raise Exception("Intestazione estrazione non trovata")
 
-    resto = testo[m_inizio.start():]
+    resto  = testo[m_inizio.start():]
     m_fine = re.search(r"Estrazione\s+10eLotto\s+di\s+", resto[10:], re.IGNORECASE)
     blocco = resto[:m_fine.start() + 10] if m_fine else resto
 
@@ -81,7 +84,7 @@ def parse(html):
     data_leggibile = f"{giorno_nome} {giorno_n} {mese_str} {anno_n}"
 
     # Concorso
-    m_conc = re.search(r"Concorso\s+n[°º.]\s*(\d+)/(\d{4})", blocco, re.IGNORECASE)
+    m_conc   = re.search(r"Concorso\s+n[°º.]\s*(\d+)/(\d{4})", blocco, re.IGNORECASE)
     concorso = int(m_conc.group(1)) if m_conc else 0
 
     # Parte numerica: inizia DOPO "Concorso n° NNN/AAAA"
@@ -105,7 +108,7 @@ def parse(html):
     m_dop = re.search(r"Doppio\s+Oro\s+(\d{1,2})", testo_numeri, re.IGNORECASE)
     if m_dop: doppio_oro = int(m_dop.group(1))
 
-    # 20 numeri (testo fino a "Numero Oro")
+    # 20 numeri
     testo_solo_20 = re.sub(r"(?:Numero\s+Oro|Doppio\s+Oro).*", "",
                            testo_numeri, flags=re.IGNORECASE | re.DOTALL)
     numeri = estrai_numeri(testo_solo_20, 20)
@@ -133,52 +136,39 @@ def parse(html):
 
 # ─── CSV ─────────────────────────────────────────────────────────────────────
 
-def data_ultima_nel_csv() -> date | None:
-    """Legge la data della prima riga dati del CSV (= estrazione più recente)."""
+def data_ultima_nel_csv():
     if not os.path.exists(OUTPUT_CSV):
         return None
     try:
         with open(OUTPUT_CSV, encoding="utf-8") as f:
-            f.readline()  # salta header
+            f.readline()
             prima_riga = f.readline().strip()
         if not prima_riga:
             return None
-        # Formato: "Venerdì 26 giugno 2026;..."
-        parti_data = prima_riga.split(";")[0].strip().split()
-        # parti_data = ["Venerdì", "26", "giugno", "2026"]
-        giorno_n = int(parti_data[1])
-        mese_n   = MESI_IT[parti_data[2].lower()]
-        anno_n   = int(parti_data[3])
-        return date(anno_n, mese_n, giorno_n)
+        parti = prima_riga.split(";")[0].strip().split()
+        return date(int(parti[3]), MESI_IT[parti[2].lower()], int(parti[1]))
     except Exception as e:
         print(f"  ⚠️  Errore lettura CSV: {e}")
         return None
 
-def aggiungi_riga_csv(dati: dict):
-    """Aggiunge la nuova estrazione in CIMA al CSV (dopo l'header)."""
-    data_testo  = dati["data_testo"]           # "Venerdì 26 giugno 2026"
-    numeri_str  = " ".join(str(n) for n in dati["numeri"])
-    oro         = dati["numero_oro"]
-    doppio      = dati["doppio_oro"]
-    extra_str   = " ".join(str(n) for n in dati["extra"])
-    nuova_riga  = f"{data_testo};{numeri_str};{oro};{doppio};{extra_str}\r\n"
+def aggiungi_riga_csv(dati):
+    numeri_str = " ".join(str(n) for n in dati["numeri"])
+    extra_str  = " ".join(str(n) for n in dati["extra"])
+    nuova_riga = f"{dati['data_testo']};{numeri_str};{dati['numero_oro']};{dati['doppio_oro']};{extra_str}\r\n"
 
     if os.path.exists(OUTPUT_CSV):
         with open(OUTPUT_CSV, encoding="utf-8") as f:
             contenuto = f.read()
-        # Inserisce dopo l'header
-        lines = contenuto.splitlines(keepends=True)
+        lines  = contenuto.splitlines(keepends=True)
         header = lines[0]
         resto  = "".join(lines[1:])
         nuovo  = header + nuova_riga + resto
     else:
-        # CSV non esiste: crea con header
-        header  = "Date;Numbers;Gold;DoubleGold;Extra\r\n"
-        nuovo   = header + nuova_riga
+        nuovo = f"Date;Numbers;Gold;DoubleGold;Extra\r\n{nuova_riga}"
 
     with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
         f.write(nuovo)
-    print(f"  ✅ CSV aggiornato: aggiunta riga '{data_testo}'")
+    print(f"  ✅ CSV aggiornato: aggiunta riga '{dati['data_testo']}'")
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -186,8 +176,6 @@ def main():
     oggi = date.today()
     print(f"=== Fetch 10eLotto Serale - {oggi} ===\n")
 
-    # Controlla se il CSV è già aggiornato a oggi
-    # (evita doppi aggiornamenti in caso di re-run manuale)
     data_csv = data_ultima_nel_csv()
     if data_csv and data_csv >= oggi:
         print(f"✅ CSV già aggiornato a {data_csv} — nessuna chiamata necessaria")
@@ -201,15 +189,14 @@ def main():
             dati  = parse(html)
             print(f"  Data trovata: {dati['data_testo']} ({dati['data']})")
 
-            # Controlla se il sito è già aggiornato con l'estrazione di oggi
             if dati["data"] < oggi.isoformat():
-                print(f"  ⚠️  Il sito riporta ancora {dati['data']} (atteso {oggi})")
+                print(f"  ⚠️  Sito ancora fermo a {dati['data']} (atteso {oggi})")
                 if tentativo < MAX_RETRY:
-                    print(f"  ⏳ Attendo {RETRY_WAIT // 60} minuti prima di riprovare...")
+                    print(f"  ⏳ Attendo {RETRY_WAIT // 60} minuti...")
                     time.sleep(RETRY_WAIT)
                     continue
                 else:
-                    print("  ⚠️  Esauriti i tentativi — salvo comunque i dati disponibili")
+                    print("  ⚠️  Esauriti i tentativi — salvo i dati disponibili")
             else:
                 print(f"  ✅ Dati aggiornati a oggi!")
             break
@@ -227,12 +214,10 @@ def main():
         print("❌ Nessun dato ottenuto")
         sys.exit(1)
 
-    # Salva JSON
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(dati, f, ensure_ascii=False, indent=2)
     print(f"\n✅ {OUTPUT_JSON} aggiornato")
 
-    # Aggiorna CSV solo se la data è nuova rispetto all'ultima nel file
     if data_csv is None or dati["data"] > data_csv.isoformat():
         aggiungi_riga_csv(dati)
     else:
