@@ -11,7 +11,8 @@ import json, re, sys, time, os
 from datetime import date, datetime
 import urllib.request, urllib.parse
 
-SCRAPE_DO_TOKEN = "a7c707c84d8345ef9c381ef4aecf5e59a3a24261872"
+import os
+SCRAPE_DO_TOKEN = os.environ.get("SCRAPE_DO_TOKEN", "")
 TARGET_URL      = "https://estrazioni10elotto.it/"
 OUTPUT_JSON     = "ultima_estrazione.json"
 OUTPUT_CSV      = "storico_10elotto_serale.csv"
