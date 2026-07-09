@@ -2,29 +2,41 @@ name: Aggiorna 10eLotto Serale
 
 on:
   schedule:
-    # Copertura ogni 20 minuti dalle 19:00 alle 20:40 italiane
-    # Estate CEST = UTC+2 → sottraiamo 2 ore
-    - cron: '0 17 * * 2'     # mar 19:00
-    - cron: '0 17 * * 4'     # gio 19:00
-    - cron: '0 17 * * 5'     # ven 19:00
-    - cron: '0 17 * * 6'     # sab 19:00
-    - cron: '20 17 * * 2'    # mar 19:20
+    # Copertura ogni 20 minuti dalle 18:00 alle 20:40 italiane (CEST = UTC+2)
+    # GitHub può ritardare fino a 60-90 minuti → partiamo 2 ore prima
+    - cron: '0 16 * * 2'     # mar 18:00 IT
+    - cron: '0 16 * * 4'     # gio 18:00 IT
+    - cron: '0 16 * * 5'     # ven 18:00 IT
+    - cron: '0 16 * * 6'     # sab 18:00 IT
+    - cron: '20 16 * * 2'    # mar 18:20 IT
+    - cron: '20 16 * * 4'
+    - cron: '20 16 * * 5'
+    - cron: '20 16 * * 6'
+    - cron: '40 16 * * 2'    # mar 18:40 IT
+    - cron: '40 16 * * 4'
+    - cron: '40 16 * * 5'
+    - cron: '40 16 * * 6'
+    - cron: '0 17 * * 2'     # mar 19:00 IT
+    - cron: '0 17 * * 4'
+    - cron: '0 17 * * 5'
+    - cron: '0 17 * * 6'
+    - cron: '20 17 * * 2'    # mar 19:20 IT
     - cron: '20 17 * * 4'
     - cron: '20 17 * * 5'
     - cron: '20 17 * * 6'
-    - cron: '40 17 * * 2'    # mar 19:40
+    - cron: '40 17 * * 2'    # mar 19:40 IT
     - cron: '40 17 * * 4'
     - cron: '40 17 * * 5'
     - cron: '40 17 * * 6'
-    - cron: '0 18 * * 2'     # mar 20:00
+    - cron: '0 18 * * 2'     # mar 20:00 IT
     - cron: '0 18 * * 4'
     - cron: '0 18 * * 5'
     - cron: '0 18 * * 6'
-    - cron: '20 18 * * 2'    # mar 20:20
+    - cron: '20 18 * * 2'    # mar 20:20 IT
     - cron: '20 18 * * 4'
     - cron: '20 18 * * 5'
     - cron: '20 18 * * 6'
-    - cron: '40 18 * * 2'    # mar 20:40
+    - cron: '40 18 * * 2'    # mar 20:40 IT
     - cron: '40 18 * * 4'
     - cron: '40 18 * * 5'
     - cron: '40 18 * * 6'
