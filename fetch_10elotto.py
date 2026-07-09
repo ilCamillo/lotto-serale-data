@@ -1,44 +1,80 @@
 #!/usr/bin/env python3
 """
 fetch_10elotto.py
-- Controlla la data nel JSON su GitHub
-- Se già aggiornato ad oggi: esce senza chiamare scrape.do
-- Se non aggiornato: scrapa estrazioni10elotto.it e aggiorna JSON + CSV
+- Controlla la data nel JSON locale (già committato nel repo)
+- Se già aggiornato all'ultima estrazione attesa: esce senza chiamare scrape.do
+- Se non aggiornato: scrapa estrazioni10elotto.it via scrape.do
 - Retry automatico se il sito non è ancora aggiornato
 """
 
 import json, re, sys, time, os, urllib.request, urllib.parse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 SCRAPE_DO_TOKEN = os.environ.get("SCRAPE_DO_TOKEN", "")
 TARGET_URL      = "https://estrazioni10elotto.it/"
 OUTPUT_JSON     = "ultima_estrazione.json"
 OUTPUT_CSV      = "storico_10elotto_serale.csv"
 MAX_RETRY       = 3
-RETRY_WAIT      = 300   # 5 minuti
+RETRY_WAIT      = 300  # 5 minuti tra un tentativo e l'altro
 
-MESI_IT = {"gennaio":1,"febbraio":2,"marzo":3,"aprile":4,"maggio":5,"giugno":6,
-            "luglio":7,"agosto":8,"settembre":9,"ottobre":10,"novembre":11,"dicembre":12}
-GIORNI_IT = {0:"Lunedì",1:"Martedì",2:"Mercoledì",3:"Giovedì",
-             4:"Venerdì",5:"Sabato",6:"Domenica"}
-
-# Giorni di estrazione: martedì=1, giovedì=3, venerdì=4, sabato=5
+MESI_IT = {
+    "gennaio":1,"febbraio":2,"marzo":3,"aprile":4,"maggio":5,"giugno":6,
+    "luglio":7,"agosto":8,"settembre":9,"ottobre":10,"novembre":11,"dicembre":12
+}
+GIORNI_IT = {
+    0:"Lunedì",1:"Martedì",2:"Mercoledì",3:"Giovedì",
+    4:"Venerdì",5:"Sabato",6:"Domenica"
+}
+# Giorni di estrazione: lunedì=0, martedì=1, giovedì=3, venerdì=4, sabato=5
 GIORNI_ESTRAZIONE = {1, 3, 4, 5}
+ORA_ESTRAZIONE    = 20  # le 20:00
+
+# ─── Calcolo ora italiana ─────────────────────────────────────────────────────
+
+def ora_italiana() -> datetime:
+    """Restituisce il datetime corrente in ora italiana (gestisce ora legale)."""
+    utc_now = datetime.now(timezone.utc)
+    # Ora legale italiana (CEST): ultima domenica di marzo → ultima domenica di ottobre
+    anno = utc_now.year
+    # Calcola ultima domenica di marzo
+    import calendar
+    def ultima_domenica(anno, mese):
+        ultimo_giorno = calendar.monthrange(anno, mese)[1]
+        for g in range(ultimo_giorno, 0, -1):
+            if datetime(anno, mese, g).weekday() == 6:
+                return datetime(anno, mese, g, 1, 0, 0, tzinfo=timezone.utc)
+        return None
+
+    inizio_legale = ultima_domenica(anno, 3)   # ultima domenica marzo
+    fine_legale   = ultima_domenica(anno, 10)  # ultima domenica ottobre
+
+    if inizio_legale and fine_legale and inizio_legale <= utc_now < fine_legale:
+        offset = timedelta(hours=2)  # CEST (ora legale)
+    else:
+        offset = timedelta(hours=1)  # CET (ora solare)
+
+    return (utc_now + offset).replace(tzinfo=None)
 
 def ultima_estrazione_attesa() -> date:
-    """Calcola la data dell'ultima estrazione che dovrebbe essere avvenuta."""
-    now = datetime.utcnow() + timedelta(hours=2)  # ora italiana (CEST)
+    """
+    Calcola la data dell'ultima estrazione che dovrebbe già essere avvenuta
+    usando l'ora italiana corretta (con ora legale).
+    """
+    now_it = ora_italiana()
+    print(f"  Ora italiana corrente: {now_it.strftime('%Y-%m-%d %H:%M')}")
+
     for i in range(7):
-        candidato = now - timedelta(days=i)
+        candidato = now_it - timedelta(days=i)
         if candidato.weekday() in GIORNI_ESTRAZIONE:
-            # Se è oggi ma prima delle 20:05, prendi la precedente
-            if i == 0 and candidato.hour < 20:
+            # Se è oggi ma prima delle 20:05, salta a ieri
+            if i == 0 and candidato.hour < ORA_ESTRAZIONE:
                 continue
             return candidato.date()
-    return now.date()
+    return now_it.date()
+
+# ─── Lettura JSON locale ──────────────────────────────────────────────────────
 
 def data_nel_json() -> date | None:
-    """Legge la data dell'ultima estrazione già salvata nel JSON locale."""
     if not os.path.exists(OUTPUT_JSON):
         return None
     try:
@@ -47,6 +83,8 @@ def data_nel_json() -> date | None:
         return date.fromisoformat(d["data"])
     except Exception:
         return None
+
+# ─── Fetch HTML via scrape.do ────────────────────────────────────────────────
 
 def fetch_html() -> str:
     if not SCRAPE_DO_TOKEN:
@@ -59,6 +97,8 @@ def fetch_html() -> str:
         if r.status != 200:
             raise Exception(f"HTTP {r.status}")
         return r.read().decode("utf-8", errors="replace")
+
+# ─── Parsing HTML ─────────────────────────────────────────────────────────────
 
 def strip_tags(html: str) -> str:
     return re.sub(r"<[^>]+>", " ", html)
@@ -113,8 +153,7 @@ def parse(html: str) -> dict:
     else:
         testo_numeri = testo_dopo
 
-    numero_oro = None
-    doppio_oro = None
+    numero_oro, doppio_oro = None, None
     m_oro = re.search(r"Numero\s+Oro\s+(\d{1,2})", testo_numeri, re.IGNORECASE)
     if m_oro: numero_oro = int(m_oro.group(1))
     m_dop = re.search(r"Doppio\s+Oro\s+(\d{1,2})", testo_numeri, re.IGNORECASE)
@@ -145,6 +184,8 @@ def parse(html: str) -> dict:
         "aggiornato_il": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     }
 
+# ─── Aggiornamento CSV ────────────────────────────────────────────────────────
+
 def aggiungi_riga_csv(dati: dict):
     numeri_str = " ".join(str(n) for n in dati["numeri"])
     extra_str  = " ".join(str(n) for n in dati["extra"])
@@ -165,37 +206,43 @@ def aggiungi_riga_csv(dati: dict):
         f.write(nuovo)
     print(f"  ✅ CSV aggiornato con '{dati['data_testo']}'")
 
-def main():
-    oggi = ultima_estrazione_attesa()
-    print(f"=== Fetch 10eLotto — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} ===")
-    print(f"Ultima estrazione attesa: {oggi}")
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
-    # ── Controllo principale: il JSON locale è già aggiornato? ──────────
+def main():
+    now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    print(f"=== Fetch 10eLotto — {now_utc} ===")
+
+    attesa = ultima_estrazione_attesa()
+    print(f"Ultima estrazione attesa : {attesa}")
+
+    # Controlla se il JSON è già aggiornato
     data_json = data_nel_json()
-    if data_json and data_json >= oggi:
-        print(f"✅ JSON già aggiornato a {data_json} — nessuna chiamata necessaria")
+    print(f"Data nel JSON attuale    : {data_json}")
+
+    if data_json and data_json >= attesa:
+        print(f"✅ JSON già aggiornato a {data_json} — nessuna chiamata a scrape.do")
         sys.exit(0)
 
-    print(f"⚠️  JSON fermo a {data_json} — avvio scraping...")
+    print(f"⚠️  Aggiornamento necessario — avvio scraping...")
 
-    # ── Scraping con retry ───────────────────────────────────────────────
+    # Scraping con retry
     dati = None
     for tentativo in range(1, MAX_RETRY + 1):
         print(f"\n--- Tentativo {tentativo}/{MAX_RETRY} ---")
         try:
-            html  = fetch_html()
-            dati  = parse(html)
+            html = fetch_html()
+            dati = parse(html)
+            data_sito = date.fromisoformat(dati["data"])
             print(f"  Data trovata sul sito: {dati['data_testo']}")
 
-            data_sito = date.fromisoformat(dati["data"])
-            if data_sito < oggi:
-                print(f"  ⚠️  Sito ancora fermo a {dati['data']} (attesa {oggi})")
+            if data_sito < attesa:
+                print(f"  ⚠️  Sito fermo a {dati['data']} (attesa {attesa})")
                 if tentativo < MAX_RETRY:
-                    print(f"  ⏳ Attendo {RETRY_WAIT // 60} minuti...")
+                    print(f"  ⏳ Attendo {RETRY_WAIT // 60} min...")
                     time.sleep(RETRY_WAIT)
                     continue
                 else:
-                    print("  ⚠️  Sito non aggiornato dopo tutti i tentativi — salvo comunque")
+                    print("  ⚠️  Sito non aggiornato — salvo comunque i dati disponibili")
             else:
                 print(f"  ✅ Sito aggiornato!")
             break
@@ -203,7 +250,7 @@ def main():
         except Exception as e:
             print(f"  ❌ Errore: {e}")
             if tentativo < MAX_RETRY:
-                print(f"  ⏳ Riprovo tra {RETRY_WAIT // 60} minuti...")
+                print(f"  ⏳ Riprovo tra {RETRY_WAIT // 60} min...")
                 time.sleep(RETRY_WAIT)
             else:
                 print("  ❌ Tutti i tentativi falliti")
@@ -212,12 +259,12 @@ def main():
     if dati is None:
         sys.exit(1)
 
-    # ── Salva JSON ───────────────────────────────────────────────────────
+    # Salva JSON
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(dati, f, ensure_ascii=False, indent=2)
     print(f"\n✅ {OUTPUT_JSON} aggiornato")
 
-    # ── Aggiorna CSV solo se data nuova ──────────────────────────────────
+    # Aggiorna CSV solo se la data è nuova
     if data_json is None or dati["data"] > data_json.isoformat():
         aggiungi_riga_csv(dati)
     else:
