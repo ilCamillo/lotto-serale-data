@@ -14,8 +14,9 @@ SCRAPE_DO_TOKEN = os.environ.get("SCRAPE_DO_TOKEN", "")
 TARGET_URL      = "https://estrazioni10elotto.it/"
 OUTPUT_JSON     = "ultima_estrazione.json"
 OUTPUT_CSV      = "storico_10elotto_serale.csv"
-MAX_RETRY       = 3
-RETRY_WAIT      = 300  # 5 minuti tra un tentativo e l'altro
+# Nessun retry interno: 1 sola chiamata per run.
+# Se il sito non è aggiornato, la run esce senza salvare nulla.
+# La run successiva (schedulata 20 min dopo) riproverà.
 
 MESI_IT = {
     "gennaio":1,"febbraio":2,"marzo":3,"aprile":4,"maggio":5,"giugno":6,
@@ -215,7 +216,7 @@ def main():
     attesa = ultima_estrazione_attesa()
     print(f"Ultima estrazione attesa : {attesa}")
 
-    # Controlla se il JSON è già aggiornato
+    # Controlla se il JSON è già aggiornato → esce senza chiamare scrape.do
     data_json = data_nel_json()
     print(f"Data nel JSON attuale    : {data_json}")
 
@@ -223,40 +224,26 @@ def main():
         print(f"✅ JSON già aggiornato a {data_json} — nessuna chiamata a scrape.do")
         sys.exit(0)
 
-    print(f"⚠️  Aggiornamento necessario — avvio scraping...")
+    print(f"⚠️  Aggiornamento necessario — 1 chiamata a scrape.do...")
 
-    # Scraping con retry
-    dati = None
-    for tentativo in range(1, MAX_RETRY + 1):
-        print(f"\n--- Tentativo {tentativo}/{MAX_RETRY} ---")
-        try:
-            html = fetch_html()
-            dati = parse(html)
-            data_sito = date.fromisoformat(dati["data"])
-            print(f"  Data trovata sul sito: {dati['data_testo']}")
+    # UNA SOLA chiamata per run — nessun retry interno
+    # Se il sito non è ancora aggiornato, esce senza salvare nulla
+    # La prossima run schedulata (tra 20 min) riproverà automaticamente
+    try:
+        html = fetch_html()
+        dati = parse(html)
+        data_sito = date.fromisoformat(dati["data"])
+        print(f"  Data trovata sul sito: {dati['data_testo']}")
 
-            if data_sito < attesa:
-                print(f"  ⚠️  Sito fermo a {dati['data']} (attesa {attesa})")
-                if tentativo < MAX_RETRY:
-                    print(f"  ⏳ Attendo {RETRY_WAIT // 60} min...")
-                    time.sleep(RETRY_WAIT)
-                    continue
-                else:
-                    print("  ⚠️  Sito non aggiornato — salvo comunque i dati disponibili")
-            else:
-                print(f"  ✅ Sito aggiornato!")
-            break
+        if data_sito < attesa:
+            print(f"  ⚠️  Sito fermo a {dati['data']} (attesa {attesa})")
+            print(f"  ⏭️  Nessun salvataggio — la prossima run riproverà tra 20 min")
+            sys.exit(0)
 
-        except Exception as e:
-            print(f"  ❌ Errore: {e}")
-            if tentativo < MAX_RETRY:
-                print(f"  ⏳ Riprovo tra {RETRY_WAIT // 60} min...")
-                time.sleep(RETRY_WAIT)
-            else:
-                print("  ❌ Tutti i tentativi falliti")
-                sys.exit(1)
+        print(f"  ✅ Sito aggiornato!")
 
-    if dati is None:
+    except Exception as e:
+        print(f"  ❌ Errore scraping: {e}")
         sys.exit(1)
 
     # Salva JSON
