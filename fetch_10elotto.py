@@ -11,6 +11,9 @@ import json, re, sys, time, os, urllib.request, urllib.parse
 from datetime import date, datetime, timezone, timedelta
 
 SCRAPE_DO_TOKEN = os.environ.get("SCRAPE_DO_TOKEN", "")
+FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT", "")
+FIREBASE_PROJECT_ID = "tenelotto"
+FCM_TOPIC = "estrazioni"
 TARGET_URL      = "https://estrazioni10elotto.it/"
 OUTPUT_JSON     = "ultima_estrazione.json"
 OUTPUT_CSV      = "storico_10elotto_serale.csv"
@@ -207,6 +210,63 @@ def aggiungi_riga_csv(dati: dict):
         f.write(nuovo)
     print(f"  ✅ CSV aggiornato con '{dati['data_testo']}'")
 
+# ─── Notifica push (Firebase Cloud Messaging) ────────────────────────────────
+
+def invia_notifica_fcm(dati: dict):
+    """
+    Invia una notifica push a tutti i dispositivi iscritti al topic
+    "estrazioni" tramite Firebase Cloud Messaging (API HTTP v1).
+
+    Non blocca mai l'esecuzione principale: se qualcosa va storto qui,
+    i dati dell'estrazione sono comunque già stati salvati correttamente.
+    """
+    if not FIREBASE_SERVICE_ACCOUNT_JSON:
+        print("  ⚠️  FIREBASE_SERVICE_ACCOUNT non configurato — notifica push saltata")
+        return
+
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+
+        info = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
+        credenziali = service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/firebase.messaging"]
+        )
+        credenziali.refresh(GoogleAuthRequest())
+        access_token = credenziali.token
+
+        titolo = "🎱 Nuova estrazione disponibile"
+        corpo  = f"{dati['data_testo']} — Numero Oro: {dati['numero_oro']}"
+
+        payload = {
+            "message": {
+                "topic": FCM_TOPIC,
+                "notification": {
+                    "title": titolo,
+                    "body": corpo
+                }
+            }
+        }
+
+        url = f"https://fcm.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/messages:send"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json; UTF-8"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            if r.status == 200:
+                print(f"  ✅ Notifica push inviata al topic '{FCM_TOPIC}'")
+            else:
+                print(f"  ⚠️  FCM ha risposto con status {r.status}")
+
+    except Exception as e:
+        print(f"  ⚠️  Invio notifica push fallito (dati comunque salvati): {e}")
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -250,6 +310,9 @@ def main():
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump(dati, f, ensure_ascii=False, indent=2)
     print(f"\n✅ {OUTPUT_JSON} aggiornato")
+
+    # Invia la notifica push (non blocca in caso di errore)
+    invia_notifica_fcm(dati)
 
     # Aggiorna CSV solo se la data è nuova
     if data_json is None or dati["data"] > data_json.isoformat():
