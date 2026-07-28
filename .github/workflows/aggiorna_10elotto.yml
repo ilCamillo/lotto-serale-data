@@ -45,7 +45,7 @@ jobs:
           python-version: '3.11'
 
       - name: Installa dipendenze (google-auth per notifiche push)
-        run: pip install --quiet google-auth
+        run: pip install --quiet google-auth requests
 
       - name: Esegui fetch
         run: python fetch_10elotto.py
