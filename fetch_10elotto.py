@@ -210,9 +210,38 @@ def aggiungi_riga_csv(dati: dict):
         f.write(nuovo)
     print(f"  ✅ CSV aggiornato con '{dati['data_testo']}'")
 
+# ─── Autenticazione Google (condivisa tra FCM e Firestore) ───────────────────
+
+def ottieni_token_google():
+    """
+    Ottiene un unico token OAuth2 valido sia per Firebase Cloud Messaging
+    che per Firestore, usando lo stesso service account.
+    Restituisce None se la configurazione manca o qualcosa va storto.
+    """
+    if not FIREBASE_SERVICE_ACCOUNT_JSON:
+        print("  ⚠️  FIREBASE_SERVICE_ACCOUNT non configurato — notifiche e punteggi community saltati")
+        return None
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+
+        info = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
+        credenziali = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=[
+                "https://www.googleapis.com/auth/firebase.messaging",
+                "https://www.googleapis.com/auth/datastore"
+            ]
+        )
+        credenziali.refresh(GoogleAuthRequest())
+        return credenziali.token
+    except Exception as e:
+        print(f"  ⚠️  Autenticazione Google fallita: {e}")
+        return None
+
 # ─── Notifica push (Firebase Cloud Messaging) ────────────────────────────────
 
-def invia_notifica_fcm(dati: dict):
+def invia_notifica_fcm(dati: dict, access_token: str):
     """
     Invia una notifica push a tutti i dispositivi iscritti al topic
     "estrazioni" tramite Firebase Cloud Messaging (API HTTP v1).
@@ -220,21 +249,7 @@ def invia_notifica_fcm(dati: dict):
     Non blocca mai l'esecuzione principale: se qualcosa va storto qui,
     i dati dell'estrazione sono comunque già stati salvati correttamente.
     """
-    if not FIREBASE_SERVICE_ACCOUNT_JSON:
-        print("  ⚠️  FIREBASE_SERVICE_ACCOUNT non configurato — notifica push saltata")
-        return
-
     try:
-        from google.oauth2 import service_account
-        from google.auth.transport.requests import Request as GoogleAuthRequest
-
-        info = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
-        credenziali = service_account.Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/firebase.messaging"]
-        )
-        credenziali.refresh(GoogleAuthRequest())
-        access_token = credenziali.token
-
         titolo = "🎱 Nuova estrazione disponibile"
         corpo  = f"{dati['data_testo']} — Numero Oro: {dati['numero_oro']}"
 
@@ -266,6 +281,148 @@ def invia_notifica_fcm(dati: dict):
 
     except Exception as e:
         print(f"  ⚠️  Invio notifica push fallito (dati comunque salvati): {e}")
+
+# ─── Punteggi Community (Firestore) ───────────────────────────────────────────
+
+FIRESTORE_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents"
+
+def _fs_headers(access_token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json; UTF-8"
+    }
+
+def _fs_int(n: int) -> dict:
+    return {"integerValue": str(n)}
+
+def _fs_str(s: str) -> dict:
+    return {"stringValue": s}
+
+def _fs_richiesta(url: str, access_token: str, method: str = "GET", body: dict = None) -> dict:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, headers=_fs_headers(access_token), method=method)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+def valuta_pronostici(dati: dict, access_token: str):
+    """
+    Cerca tutti i pronostici della community inviati per la data appena
+    pubblicata, calcola quanti numeri sono stati indovinati e assegna
+    i punti (indovinati² × 10) al punteggio totale e mensile di ogni utente.
+
+    Non blocca mai l'esecuzione principale: eventuali errori qui non
+    intaccano il salvataggio già avvenuto dell'estrazione.
+    """
+    try:
+        # ── 1. Cerca i pronostici "in_attesa" per questa data ─────────────
+        query_url = f"{FIRESTORE_BASE}:runQuery"
+        query_body = {
+            "structuredQuery": {
+                "from": [{"collectionId": "pronostici"}],
+                "where": {
+                    "compositeFilter": {
+                        "op": "AND",
+                        "filters": [
+                            {"fieldFilter": {
+                                "field": {"fieldPath": "dataEstrazioneTarget"},
+                                "op": "EQUAL",
+                                "value": _fs_str(dati["data"])
+                            }},
+                            {"fieldFilter": {
+                                "field": {"fieldPath": "stato"},
+                                "op": "EQUAL",
+                                "value": _fs_str("in_attesa")
+                            }}
+                        ]
+                    }
+                }
+            }
+        }
+        risultati = _fs_richiesta(query_url, access_token, "POST", query_body)
+        if not isinstance(risultati, list):
+            risultati = []
+
+        documenti = [r["document"] for r in risultati if "document" in r]
+
+        if not documenti:
+            print("  ℹ️  Nessun pronostico community da valutare per questa estrazione")
+            return
+
+        print(f"  🎯 Valutazione {len(documenti)} pronostici community...")
+        numeri_estratti = set(dati["numeri"])
+        mese_corrente = datetime.utcnow().strftime("%Y-%m")  # coerente col client (YYYY-MM)
+        valutati = 0
+
+        for doc in documenti:
+            try:
+                nome_doc = doc["name"]  # path completo, riusabile per il PATCH
+                fields = doc.get("fields", {})
+
+                numeri_valori = fields.get("numeri", {}).get("arrayValue", {}).get("values", [])
+                numeri_giocati = {int(v["integerValue"]) for v in numeri_valori}
+                recovery_code  = fields.get("recoveryCode", {}).get("stringValue", "")
+
+                if not recovery_code or not numeri_giocati:
+                    continue
+
+                indovinati = len(numeri_giocati & numeri_estratti)
+                punti = indovinati ** 2 * 10
+
+                # ── 2. Aggiorna il pronostico (solo i campi valutati) ──────
+                url_pronostico = (
+                    f"https://firestore.googleapis.com/v1/{nome_doc}"
+                    "?updateMask.fieldPaths=stato"
+                    "&updateMask.fieldPaths=indovinati"
+                    "&updateMask.fieldPaths=punti"
+                )
+                _fs_richiesta(url_pronostico, access_token, "PATCH", {
+                    "fields": {
+                        "stato":      _fs_str("valutato"),
+                        "indovinati": _fs_int(indovinati),
+                        "punti":      _fs_int(punti)
+                    }
+                })
+
+                # ── 3. Aggiorna il punteggio dell'utente ────────────────────
+                url_utente = f"{FIRESTORE_BASE}/users/{recovery_code}"
+                utente = _fs_richiesta(url_utente, access_token, "GET")
+                campi_utente = utente.get("fields", {})
+
+                vecchio_totale = int(campi_utente.get("punteggioTotale", {}).get("integerValue", "0"))
+                vecchio_mese_punti = int(campi_utente.get("punteggioMese", {}).get("integerValue", "0"))
+                mese_salvato = campi_utente.get("meseAnno", {}).get("stringValue", "")
+
+                nuovo_totale = vecchio_totale + punti
+                # Se il mese salvato è diverso da quello corrente, il contatore
+                # mensile riparte da zero (stesso comportamento atteso dal client)
+                nuovo_mese_punti = punti if mese_salvato != mese_corrente else vecchio_mese_punti + punti
+
+                url_update_utente = (
+                    f"{FIRESTORE_BASE}/users/{recovery_code}"
+                    "?updateMask.fieldPaths=punteggioTotale"
+                    "&updateMask.fieldPaths=punteggioMese"
+                    "&updateMask.fieldPaths=meseAnno"
+                )
+                _fs_richiesta(url_update_utente, access_token, "PATCH", {
+                    "fields": {
+                        "punteggioTotale": _fs_int(nuovo_totale),
+                        "punteggioMese":   _fs_int(nuovo_mese_punti),
+                        "meseAnno":        _fs_str(mese_corrente)
+                    }
+                })
+
+                valutati += 1
+                print(f"     • {recovery_code[:8]}... → {indovinati} indovinati, +{punti} punti")
+
+            except Exception as e_doc:
+                print(f"     ⚠️  Errore su un pronostico, salto al prossimo: {e_doc}")
+                continue
+
+        print(f"  ✅ {valutati}/{len(documenti)} pronostici valutati e punteggi aggiornati")
+
+    except Exception as e:
+        print(f"  ⚠️  Valutazione pronostici community fallita: {e}")
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
@@ -311,8 +468,12 @@ def main():
         json.dump(dati, f, ensure_ascii=False, indent=2)
     print(f"\n✅ {OUTPUT_JSON} aggiornato")
 
-    # Invia la notifica push (non blocca in caso di errore)
-    invia_notifica_fcm(dati)
+    # Invia la notifica push e valuta i pronostici community
+    # (un solo token Google riusato per entrambe le chiamate)
+    access_token = ottieni_token_google()
+    if access_token:
+        invia_notifica_fcm(dati, access_token)
+        valuta_pronostici(dati, access_token)
 
     # Aggiorna CSV solo se la data è nuova
     if data_json is None or dati["data"] > data_json.isoformat():
