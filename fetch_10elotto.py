@@ -94,7 +94,7 @@ def fetch_html() -> str:
     if not SCRAPE_DO_TOKEN:
         raise Exception("SCRAPE_DO_TOKEN mancante nei GitHub Secrets")
     encoded = urllib.parse.quote(TARGET_URL, safe="")
-    url = f"https://api.scrape.do/?token={SCRAPE_DO_TOKEN}&url={encoded}&render=true"
+    url = f"https://api.scrape.do/?token={SCRAPE_DO_TOKEN}&url={encoded}&render=true&blockResources=false"
     print(f"  → scrape.do: {TARGET_URL}")
     req = urllib.request.Request(url, headers={"User-Agent": "TeneLotto/1.0"})
     with urllib.request.urlopen(req, timeout=60) as r:
