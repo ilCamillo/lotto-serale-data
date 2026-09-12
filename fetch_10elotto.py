@@ -117,17 +117,9 @@ def estrai_numeri(testo: str, quanti: int) -> list:
             break
     return res
 
-def parse(html: str) -> dict:
-    testo = strip_tags(html)
-
-    m_inizio = re.search(r"Estrazione\s+10eLotto\s+di\s+", testo, re.IGNORECASE)
-    if not m_inizio:
-        raise Exception("Intestazione estrazione non trovata")
-
-    resto  = testo[m_inizio.start():]
-    m_fine = re.search(r"Estrazione\s+10eLotto\s+di\s+", resto[10:], re.IGNORECASE)
-    blocco = resto[:m_fine.start() + 10] if m_fine else resto
-
+def parse_blocco(blocco: str) -> dict:
+    """Estrae i dati di UNA singola estrazione da un blocco di testo già isolato
+    (che inizia con 'Estrazione 10eLotto di ...')."""
     m_data = re.search(
         r"(lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica)\s+"
         r"(\d{1,2})\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|"
@@ -187,6 +179,30 @@ def parse(html: str) -> dict:
         "extra":         extra,
         "aggiornato_il": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     }
+
+def parse_tutte(html: str) -> list:
+    """Estrae TUTTE le estrazioni presenti nella pagina (di solito le ultime 5),
+    non solo la più recente — così una singola chiamata a scrape.do può
+    recuperare in un colpo solo eventuali estrazioni mancanti, senza bisogno
+    di chiamate aggiuntive. Ordine: dalla più recente alla più vecchia, come
+    compaiono sul sito."""
+    testo = strip_tags(html)
+    posizioni = [m.start() for m in re.finditer(r"Estrazione\s+10eLotto\s+di\s+", testo, re.IGNORECASE)]
+    if not posizioni:
+        raise Exception("Nessuna intestazione estrazione trovata")
+
+    risultati = []
+    for i, pos in enumerate(posizioni):
+        fine = posizioni[i + 1] if i + 1 < len(posizioni) else len(testo)
+        blocco = testo[pos:fine]
+        try:
+            risultati.append(parse_blocco(blocco))
+        except Exception as e:
+            print(f"  ⚠️  Blocco estrazione #{i+1} scartato ({e})")
+
+    if not risultati:
+        raise Exception("Nessun blocco valido estratto dalla pagina")
+    return risultati
 
 # ─── Aggiornamento CSV ────────────────────────────────────────────────────────
 
@@ -448,12 +464,13 @@ def main():
     # La prossima run schedulata (tra 20 min) riproverà automaticamente
     try:
         html = fetch_html()
-        dati = parse(html)
-        data_sito = date.fromisoformat(dati["data"])
-        print(f"  Data trovata sul sito: {dati['data_testo']}")
+        tutte = parse_tutte(html)   # dalla più recente alla più vecchia
+        più_recente = tutte[0]
+        data_sito = date.fromisoformat(più_recente["data"])
+        print(f"  Data più recente trovata sul sito: {più_recente['data_testo']}")
 
         if data_sito < attesa:
-            print(f"  ⚠️  Sito fermo a {dati['data']} (attesa {attesa})")
+            print(f"  ⚠️  Sito fermo a {più_recente['data']} (attesa {attesa})")
             print(f"  ⏭️  Nessun salvataggio — la prossima run riproverà tra 20 min")
             sys.exit(0)
 
@@ -463,31 +480,47 @@ def main():
         print(f"  ❌ Errore scraping: {e}")
         sys.exit(1)
 
-    # Salva JSON
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(dati, f, ensure_ascii=False, indent=2)
-    print(f"\n✅ {OUTPUT_JSON} aggiornato")
+    # Tra tutte le estrazioni trovate sulla pagina, quali sono più recenti di
+    # quella già salvata? (capita che il sito sia rimasto fermo per un po' e,
+    # una volta ripartito, ne recuperiamo più di una in un colpo solo — niente
+    # buchi da riempire a mano come l'ultima volta)
+    mancanti = [d for d in tutte if data_json is None or date.fromisoformat(d["data"]) > data_json]
+    if not mancanti:
+        print("  CSV già aggiornato — nessuna estrazione nuova da salvare")
+        sys.exit(0)
+    mancanti.sort(key=lambda d: d["data"])  # dalla più vecchia alla più recente
 
-    # Invia la notifica push e valuta i pronostici community
-    # (un solo token Google riusato per entrambe le chiamate)
+    if len(mancanti) > 1:
+        elenco = ", ".join(d["data"] for d in mancanti)
+        print(f"  ℹ️  Recuperate {len(mancanti)} estrazioni mancanti in un colpo solo: {elenco}")
+
     access_token = ottieni_token_google()
-    if access_token:
-        invia_notifica_fcm(dati, access_token)
-        valuta_pronostici(dati, access_token)
 
-    # Aggiorna CSV solo se la data è nuova
-    if data_json is None or dati["data"] > data_json.isoformat():
+    # CSV e valutazione pronostici: una volta per OGNI estrazione mancante,
+    # dalla più vecchia alla più recente (così l'ordine nel CSV resta corretto
+    # e ogni pronostico viene valutato contro l'estrazione giusta)
+    for dati in mancanti:
         aggiungi_riga_csv(dati)
-    else:
-        print(f"  CSV già contiene {dati['data']} — nessuna riga aggiunta")
+        if access_token:
+            valuta_pronostici(dati, access_token)
+
+    # JSON e notifica push: solo per l'estrazione più recente in assoluto
+    # (una singola notifica, anche se si stanno recuperando più estrazioni)
+    ultima = mancanti[-1]
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+        json.dump(ultima, f, ensure_ascii=False, indent=2)
+    print(f"\n✅ {OUTPUT_JSON} aggiornato con {ultima['data_testo']}")
+
+    if access_token:
+        invia_notifica_fcm(ultima, access_token)
 
     print(f"\n=== Risultato ===")
-    print(f"  Concorso   : n° {dati['concorso']}")
-    print(f"  Data       : {dati['data_testo']}")
-    print(f"  Numeri     : {dati['numeri']}")
-    print(f"  Numero Oro : {dati['numero_oro']}")
-    print(f"  Doppio Oro : {dati['doppio_oro']}")
-    print(f"  Extra      : {dati['extra']}")
+    for dati in mancanti:
+        print(f"  Concorso n°{dati['concorso']} — {dati['data_testo']}")
+        print(f"    Numeri     : {dati['numeri']}")
+        print(f"    Numero Oro : {dati['numero_oro']}")
+        print(f"    Doppio Oro : {dati['doppio_oro']}")
+        print(f"    Extra      : {dati['extra']}")
 
 if __name__ == "__main__":
     main()
